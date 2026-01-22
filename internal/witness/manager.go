@@ -10,10 +10,10 @@ import (
 
 	"github.com/steveyegge/gastown/internal/agent"
 	"github.com/steveyegge/gastown/internal/beads"
-	"github.com/steveyegge/gastown/internal/claude"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/rig"
+	"github.com/steveyegge/gastown/internal/runtime"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/tmux"
 	"github.com/steveyegge/gastown/internal/workspace"
@@ -156,19 +156,19 @@ func (m *Manager) Start(foreground bool, agentOverride string, envOverrides []st
 	// Working directory
 	witnessDir := m.witnessDir()
 
-	// Ensure Claude settings exist in witness/ (not witness/rig/) so we don't
-	// write into the source repo. Claude walks up the tree to find settings.
+	// Ensure runtime settings exist in witness/ (not witness/rig/) so we don't
+	// write into the source repo. Runtime walks up the tree to find settings.
 	witnessParentDir := filepath.Join(m.rig.Path, "witness")
-	if err := claude.EnsureSettingsForRole(witnessParentDir, "witness"); err != nil {
-		return fmt.Errorf("ensuring Claude settings: %w", err)
+	townRoot := m.townRoot()
+	agentCfg := config.ResolveRoleAgentConfig("witness", townRoot, m.rig.Path)
+	if err := runtime.EnsureSettingsForRole(witnessParentDir, "witness", agentCfg); err != nil {
+		return fmt.Errorf("ensuring runtime settings: %w", err)
 	}
 
 	roleConfig, err := m.roleConfig()
 	if err != nil {
 		return err
 	}
-
-	townRoot := m.townRoot()
 
 	// Build startup command first
 	// NOTE: No gt prime injection needed - SessionStart hook handles it automatically
@@ -231,7 +231,9 @@ func (m *Manager) Start(foreground bool, agentOverride string, envOverrides []st
 	// Accept bypass permissions warning dialog if it appears.
 	_ = t.AcceptBypassPermissionsWarning(sessionID)
 
-	time.Sleep(constants.ShutdownNotifyDelay)
+	// Wait for runtime to be fully ready
+	runtime.SleepForReadyDelay(agentCfg)
+	_ = runtime.RunStartupFallback(t, sessionID, "witness", agentCfg)
 
 	// Inject startup nudge for predecessor discovery via /resume
 	address := fmt.Sprintf("%s/witness", m.rig.Name)

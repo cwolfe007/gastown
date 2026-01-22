@@ -113,10 +113,15 @@ func (m *Manager) Start(foreground bool, agentOverride string) error {
 	t := tmux.NewTmux()
 	sessionID := m.SessionName()
 
+	// Resolve agent config early for agent-agnostic detection
+	townRoot := filepath.Dir(m.rig.Path)
+	agentCfg := config.ResolveRoleAgentConfig("refinery", townRoot, m.rig.Path)
+	processNames := config.ExpectedPaneCommands(agentCfg)
+
 	if foreground {
 		// In foreground mode, check tmux session (no PID inference per ZFC)
-		// Use IsClaudeRunning for robust detection (see gastown#566)
-		if running, _ := t.HasSession(sessionID); running && t.IsClaudeRunning(sessionID) {
+		// Use IsRuntimeRunning for agent-agnostic detection (see gastown#566)
+		if running, _ := t.HasSession(sessionID); running && t.IsRuntimeRunning(sessionID, processNames) {
 			return ErrAlreadyRunning
 		}
 
@@ -137,15 +142,13 @@ func (m *Manager) Start(foreground bool, agentOverride string) error {
 	// Background mode: check if session already exists
 	running, _ := t.HasSession(sessionID)
 	if running {
-		// Session exists - check if Claude is actually running (healthy vs zombie)
-		// Use IsClaudeRunning for robust detection: Claude can report as "node", "claude",
-		// or version number like "2.0.76". IsAgentRunning with just "node" was too strict
-		// and caused healthy sessions to be killed. See: gastown#566
-		if t.IsClaudeRunning(sessionID) {
-			// Healthy - Claude is running
+		// Session exists - check if agent is actually running (healthy vs zombie)
+		// Use IsRuntimeRunning for agent-agnostic detection. See: gastown#566
+		if t.IsRuntimeRunning(sessionID, processNames) {
+			// Healthy - agent is running
 			return ErrAlreadyRunning
 		}
-		// Zombie - tmux alive but Claude dead. Kill and recreate.
+		// Zombie - tmux alive but agent dead. Kill and recreate.
 		_, _ = fmt.Fprintln(m.output, "⚠ Detected zombie session (tmux alive, agent dead). Recreating...")
 		if err := t.KillSession(sessionID); err != nil {
 			return fmt.Errorf("killing zombie session: %w", err)
@@ -168,13 +171,11 @@ func (m *Manager) Start(foreground bool, agentOverride string) error {
 	// Ensure runtime settings exist in refinery/ (not refinery/rig/) so we don't
 	// write into the source repo. Runtime walks up the tree to find settings.
 	refineryParentDir := filepath.Join(m.rig.Path, "refinery")
-	runtimeConfig := config.LoadRuntimeConfig(m.rig.Path)
-	if err := runtime.EnsureSettingsForRole(refineryParentDir, "refinery", runtimeConfig); err != nil {
+	if err := runtime.EnsureSettingsForRole(refineryParentDir, "refinery", agentCfg); err != nil {
 		return fmt.Errorf("ensuring runtime settings: %w", err)
 	}
 
 	// Build startup command first
-	townRoot := filepath.Dir(m.rig.Path)
 	var command string
 	if agentOverride != "" {
 		var err error
@@ -223,9 +224,9 @@ func (m *Manager) Start(foreground bool, agentOverride string) error {
 		return fmt.Errorf("saving state: %w", err)
 	}
 
-	// Wait for Claude to start and show its prompt - fatal if Claude fails to launch
+	// Wait for agent to start and show its prompt - fatal if agent fails to launch
 	// WaitForRuntimeReady waits for the runtime to be ready
-	if err := t.WaitForRuntimeReady(sessionID, runtimeConfig, constants.ClaudeStartTimeout); err != nil {
+	if err := t.WaitForRuntimeReady(sessionID, agentCfg, constants.ClaudeStartTimeout); err != nil {
 		// Kill the zombie session before returning error
 		_ = t.KillSessionWithProcesses(sessionID)
 		return fmt.Errorf("waiting for refinery to start: %w", err)
@@ -235,8 +236,8 @@ func (m *Manager) Start(foreground bool, agentOverride string) error {
 	_ = t.AcceptBypassPermissionsWarning(sessionID)
 
 	// Wait for runtime to be fully ready
-	runtime.SleepForReadyDelay(runtimeConfig)
-	_ = runtime.RunStartupFallback(t, sessionID, "refinery", runtimeConfig)
+	runtime.SleepForReadyDelay(agentCfg)
+	_ = runtime.RunStartupFallback(t, sessionID, "refinery", agentCfg)
 
 	// Inject startup nudge for predecessor discovery via /resume
 	address := fmt.Sprintf("%s/refinery", m.rig.Name)
