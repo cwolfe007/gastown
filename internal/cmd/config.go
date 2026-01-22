@@ -140,9 +140,31 @@ Examples:
 	RunE: runConfigAgentEmailDomain,
 }
 
+// Shorthand agents command for listing
+var configAgentsCmd = &cobra.Command{
+	Use:   "agents",
+	Short: "List all agents and role assignments",
+	Long: `List all available agents and current role assignments.
+
+This is a convenient shorthand that shows:
+- All built-in agent presets (claude, gemini, codex, cursor, auggie, amp, opencode)
+- Any custom agents defined in your town settings
+- The default agent setting
+- Per-role agent assignments (if configured)
+
+Role assignments allow different agents/models for different roles,
+enabling cost optimization (e.g., using a cheaper model for witnesses).
+
+Examples:
+  gt config agents           # Show all agents and role assignments
+  gt config agents --json    # Output as JSON`,
+	RunE: runConfigAgents,
+}
+
 // Flags
 var (
 	configAgentListJSON bool
+	configAgentsJSON    bool
 )
 
 // AgentListItem represents an agent in list output.
@@ -513,9 +535,135 @@ func runConfigAgentEmailDomain(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// AgentsOutput represents the full output for gt config agents --json.
+type AgentsOutput struct {
+	Agents       []AgentListItem   `json:"agents"`
+	DefaultAgent string            `json:"default_agent"`
+	RoleAgents   map[string]string `json:"role_agents,omitempty"`
+}
+
+func runConfigAgents(cmd *cobra.Command, args []string) error {
+	townRoot, err := workspace.FindFromCwd()
+	if err != nil {
+		return fmt.Errorf("finding town root: %w", err)
+	}
+
+	// Load town settings
+	settingsPath := config.TownSettingsPath(townRoot)
+	townSettings, err := config.LoadOrCreateTownSettings(settingsPath)
+	if err != nil {
+		return fmt.Errorf("loading town settings: %w", err)
+	}
+
+	// Load agent registry
+	registryPath := config.DefaultAgentRegistryPath(townRoot)
+	if err := config.LoadAgentRegistry(registryPath); err != nil {
+		return fmt.Errorf("loading agent registry: %w", err)
+	}
+
+	// Collect all agents
+	builtInAgents := config.ListAgentPresets()
+	customAgents := make(map[string]*config.RuntimeConfig)
+	if townSettings.Agents != nil {
+		for name, runtime := range townSettings.Agents {
+			customAgents[name] = runtime
+		}
+	}
+
+	// Build list items
+	var items []AgentListItem
+	for _, name := range builtInAgents {
+		preset := config.GetAgentPresetByName(name)
+		if preset != nil {
+			items = append(items, AgentListItem{
+				Name:     name,
+				Command:  preset.Command,
+				Args:     strings.Join(preset.Args, " "),
+				Type:     "built-in",
+				IsCustom: false,
+			})
+		}
+	}
+	for name, runtime := range customAgents {
+		argsStr := ""
+		if runtime.Args != nil {
+			argsStr = strings.Join(runtime.Args, " ")
+		}
+		items = append(items, AgentListItem{
+			Name:     name,
+			Command:  runtime.Command,
+			Args:     argsStr,
+			Type:     "custom",
+			IsCustom: true,
+		})
+	}
+
+	// Sort by name
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].Name < items[j].Name
+	})
+
+	// Get default agent
+	defaultAgent := townSettings.DefaultAgent
+	if defaultAgent == "" {
+		defaultAgent = "claude"
+	}
+
+	// Get role agents
+	roleAgents := townSettings.RoleAgents
+	if roleAgents == nil {
+		roleAgents = make(map[string]string)
+	}
+
+	if configAgentsJSON {
+		output := AgentsOutput{
+			Agents:       items,
+			DefaultAgent: defaultAgent,
+			RoleAgents:   roleAgents,
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(output)
+	}
+
+	// Text output
+	fmt.Printf("%s\n\n", style.Bold.Render("Available Agents"))
+	for _, item := range items {
+		typeLabel := style.Dim.Render("[" + item.Type + "]")
+		fmt.Printf("  %s %s %s", style.Bold.Render(item.Name), typeLabel, item.Command)
+		if item.Args != "" {
+			fmt.Printf(" %s", item.Args)
+		}
+		fmt.Println()
+	}
+
+	// Show default
+	fmt.Printf("\n%s %s\n", style.Bold.Render("Default:"), defaultAgent)
+
+	// Show role assignments
+	if len(roleAgents) > 0 {
+		fmt.Printf("\n%s\n", style.Bold.Render("Role Assignments"))
+		// Sort roles for consistent output
+		roles := make([]string, 0, len(roleAgents))
+		for role := range roleAgents {
+			roles = append(roles, role)
+		}
+		sort.Strings(roles)
+		for _, role := range roles {
+			agent := roleAgents[role]
+			fmt.Printf("  %s: %s\n", role, agent)
+		}
+	} else {
+		fmt.Printf("\n%s (all roles use default agent)\n", style.Dim.Render("No role-specific assignments"))
+	}
+
+	return nil
+}
+
 func init() {
 	// Add flags
 	configAgentListCmd.Flags().BoolVar(&configAgentListJSON, "json", false, "Output as JSON")
+	configAgentsCmd.Flags().BoolVar(&configAgentsJSON, "json", false, "Output as JSON")
 
 	// Add agent subcommands
 	configAgentCmd := &cobra.Command{
@@ -530,6 +678,7 @@ func init() {
 
 	// Add subcommands to config
 	configCmd.AddCommand(configAgentCmd)
+	configCmd.AddCommand(configAgentsCmd) // Shorthand for listing agents with role assignments
 	configCmd.AddCommand(configDefaultAgentCmd)
 	configCmd.AddCommand(configAgentEmailDomainCmd)
 

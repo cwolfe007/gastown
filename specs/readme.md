@@ -47,7 +47,7 @@ Pick the next `[ ]` task. Mark `[x]` when done, `[!]` if blocked.
 - [ ] 3.1 Add `gt config agent <name>` command
 - [ ] 3.2 Add `gt config role-agent <role> <agent>` command
 - [ ] 3.3 Add `gt config add-agent` command
-- [ ] 3.4 Add `gt config agents` listing command
+- [x] 3.4 Add `gt config agents` listing command
 
 ### Phase 4: Kiro CLI
 - [ ] 4.1 Research kiro-cli hooks system
@@ -84,6 +84,8 @@ _Agents: Add notes here after completing tasks._
 - **Phase 2.3**: Updated witness and refinery managers. Polecat manager was already updated. For witness (`internal/witness/manager.go`): removed `internal/claude` import, added `runtime` import, replaced `claude.EnsureSettingsForRole()` with `runtime.EnsureSettingsForRole()` using runtimeConfig. For refinery (`internal/refinery/manager.go`): replaced `t.IsClaudeRunning(sessionID)` calls with agent-agnostic detection using `config.ResolveRoleAgentConfig()`, `config.ExpectedPaneCommands()`, and `t.IsRuntimeRunning()`. Moved `townRoot` computation earlier in `Start()` function to share it across both agent detection checks and startup command building.
 
 - **Phase 2.4**: Updated mayor manager (`internal/mayor/manager.go`): removed `internal/claude` import, added `runtime` import, replaced `claude.EnsureSettingsForRole()` with `runtime.EnsureSettingsForRole()` using runtimeConfig. Agent detection was already updated. The rig.go CLI file delegates to already-updated managers, no changes needed.
+
+- **Phase 3.4**: Added `gt config agents` shorthand command (`internal/cmd/config.go`). Lists all agents (built-in + custom), shows default agent, and displays role assignments from `TownSettings.RoleAgents`. Supports `--json` flag for machine-readable output. Uses existing `AgentListItem` type and adds `AgentsOutput` struct for JSON output containing agents array, default_agent, and role_agents map.
 
 ---
 
